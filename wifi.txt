@@ -1,0 +1,456 @@
+//'Steps taken to make CC3100 as server' have been added after source code 
+/************************************************************************/
+/*The aim of the program is to make the server (tm4c123gh6pm and CC3100)*/
+/*and client (client.py running in command prompt)communicate by sending*/
+/*LED1 and LED2 values from client to server and measured potentiometer */
+/*values from server to client.                       Pot= 20k		*/
+/*Shanmathi Rajasekar - Srajase1@uncc.edu - 800966697			*/
+/*Monica Nethagani    - mnethaga@uncc.edu - 801039607	                */ 
+/*Reference:tcp_socket code in folder ti/tivaware/examples/peripherals  */ 
+/*                                                      /tcp_socket     */
+/*The Wi-Fi model CC3100 in this lab acts as server. The tcp_socket main*/
+/*program from the examples under cc3100-sdk is included in the compiler*/
+/*path. The server part from the program alone is activated. Then,the IP*/
+/*address of the module is found out in the hexadecimal form & is feeded*/
+/*to the program. One goal of the lab is to display the IP address of   */
+/*the module on the terminal.Then, the server should accept the request */
+/*from the client. The client is the downloaded client.py(python)program*/ 
+/*which is to be run in the terminal. After the connection is established*/
+/*between server and the client, the client should be able to send the  */
+/*data of LEDs to be turned on the module and correspondingly the LEDs  */
+/*should glow. Then,the pot value connected to module should be measured*/
+/*and the value should be sent to the client.The potvalue must be stored*/
+/*in the ADC and the ADC should be called as an interrupt to the server.*/
+/************************************************************************/
+
+/************************************************************************/
+/* All the standard header files required for the program are included. */
+/************************************************************************/
+#include "simplelink.h"
+#include "sl_common.h"
+#include "driverlib/pin_map.h"
+#include "driverlib/sysctl.h"
+#include "driverlib/interrupt.h"
+#include "driverlib/debug.h"
+#include "driverlib/gpio.h"
+#include"driverlib/adc.h"
+#include "inc/hw_memmap.h"
+#include "inc/hw_ints.h"
+#include"inc/hw_types.h"
+/************************************************************************/
+/* Defining the constant variables. The IP_ADDR is the IP address of our*/
+/*which is given as a hexadecimal value.				*/
+/************************************************************************/
+#define APPLICATION_VERSION "1.2.0"
+#define SL_STOP_TIMEOUT        0xFF
+#define IP_ADDR         0xc0a8020f   // Hexadecimal value of IP of board
+#define PORT_NUM        5001         // Port number to be used
+#define BUF_SIZE        1400
+#define NO_OF_PACKETS   1000
+/************************************************************************/
+/* Initialization of Global variables 					*/
+/************************************************************************/
+_u8 g_Status = 0;
+uint32_t adc_value[1];
+uint32_t adc_val;
+unsigned char address_ip[4];
+char print_address_ip[20];
+typedef enum{
+    DEVICE_NOT_IN_STATION_MODE = -0x7D0,        /* Choosing this number to avoid overlap w/ host-driver's error codes */
+    TCP_SEND_ERROR = DEVICE_NOT_IN_STATION_MODE - 1,
+    TCP_RECV_ERROR = TCP_SEND_ERROR -1,
+    STATUS_CODE_MAX = -0xBB8
+}e_AppStatusCodes;
+union{
+    _u8 BsdBuf[BUF_SIZE];
+    _u32 demobuf[BUF_SIZE/4];
+    _u8 adc_value[1];
+}uBuf;
+/************************************************************************/
+/*This function provide the asynchronous start of the WLAN event handler*/
+/*using the pWLANEVENT as the event passed to the WLAN event handler.   */
+/************************************************************************/
+void SimpleLinkWlanEventHandler(SlWlanEvent_t *pWlanEvent){
+   if(pWlanEvent == NULL){
+      CLI_Write(" [WLAN EVENT] NULL Pointer Error \n\r");
+      return;
+   }
+   switch(pWlanEvent->Event){
+      case SL_WLAN_CONNECT_EVENT:{
+            SET_STATUS_BIT(g_Status, STATUS_BIT_CONNECTION);
+      }
+      break;
+      case SL_WLAN_DISCONNECT_EVENT:{
+         slWlanConnectAsyncResponse_t*  pEventData = NULL;
+         CLR_STATUS_BIT(g_Status, STATUS_BIT_CONNECTION);
+         CLR_STATUS_BIT(g_Status, STATUS_BIT_IP_ACQUIRED);
+         pEventData = &pWlanEvent->EventData.STAandP2PModeDisconnected;
+         if(SL_WLAN_DISCONNECT_USER_INITIATED_DISCONNECTION == pEventData->reason_code)
+            CLI_Write(" Device disconnected from the AP on application's request \n\r");
+         else
+           CLI_Write(" Device disconnected from the AP on an ERROR..!! \n\r");
+      }
+      break;
+      default:{
+         CLI_Write(" [WLAN EVENT] Unexpected event \n\r");
+      }
+      break;
+   }
+}
+/************************************************************************/
+/*This function provides the asynchronous start of the IP events handler*/
+/*using pNETAPPEVENT as an event passed to IP using the DHCP indication.*/
+/************************************************************************/
+void SimpleLinkNetAppEventHandler(SlNetAppEvent_t *pNetAppEvent){
+   if(pNetAppEvent == NULL){
+      CLI_Write(" [NETAPP EVENT] NULL Pointer Error \n\r");
+      return;
+   }
+   switch(pNetAppEvent->Event){
+      case SL_NETAPP_IPV4_IPACQUIRED_EVENT:{
+         SET_STATUS_BIT(g_Status, STATUS_BIT_IP_ACQUIRED);
+         unsigned long gIPv4Address=pNetAppEvent->EventData.ipAcquiredV4.ip; //Our board ip address: 192.168.2.60
+         address_ip[0] = gIPv4Address &0xFF; //To get the last 2 digits of IP address (last part) (60 in ip address)
+         address_ip[1] = (gIPv4Address>>8) & 0xFF; //To get the third part of IP address (2 in ip address)
+         address_ip[2] = (gIPv4Address>>16) & 0xFF; //To get the second part of IP address (168 in ip address)
+         address_ip[3] = (gIPv4Address>>24) & 0xFF; //To get the first part of IP address (192 in ip address)
+         sprintf(print_address_ip, "%d.%d.%d.%d\n", address_ip[3], address_ip[2], address_ip[1], address_ip[0]); //Concatenating and converting to string
+         CLI_Write((_u8 *)"Ip address:");
+         CLI_Write((_u8 *) print_address_ip); //Printing Ip Address
+      }
+      break;
+      default:{
+         CLI_Write(" [NETAPP EVENT] Unexpected event \n\r");
+      }
+      break;
+   }
+}
+/************************************************************************/
+/*This function deals with the HTTP server events by using the callback */
+/*handler. There are 2 handlers used:                                   */
+/*       pHttpEvent    : It contains the relevant event information     */
+/*       pHttpResponse : It should be filled by the user with regards to*/
+/*                       the pHttpEvent information                     */
+/************************************************************************/
+void SimpleLinkHttpServerCallback(SlHttpServerEvent_t *pHttpEvent,SlHttpServerResponse_t *pHttpResponse){
+   CLI_Write(" [HTTP EVENT] Unexpected event \n\r");
+}
+
+/************************************************************************/
+/*This function is used for debugging the usual occurrence of the error */
+/*events. The pDevEvent is the variable used as a handler which is to be*/
+/*passed to the event.                                                  */
+/************************************************************************/
+void SimpleLinkGeneralEventHandler(SlDeviceEvent_t *pDevEvent){
+   CLI_Write(" [GENERAL EVENT] \n\r");
+}
+
+/************************************************************************/
+/*This function is used for debugging the occurrence of the Socket error*/
+/*events. The pSock is the variable used as a handler which is passed to*/
+/*the event. When the transmission is done,null point error is displayed*/
+/*When the transmission is failed, the data from the socket is stored in*/
+/*the SlSockEventData_t                                                 */
+/************************************************************************/
+void SimpleLinkSockEventHandler(SlSockEvent_t *pSock){
+   if(pSock == NULL){
+      CLI_Write(" [SOCK EVENT] NULL Pointer Error \n\r");
+      return;
+   }
+   switch( pSock->Event){
+      case SL_SOCKET_TX_FAILED_EVENT:
+         switch( pSock->socketAsyncEvent.SockTxFailData.status){
+            case SL_ECLOSE:
+               CLI_Write(" [SOCK EVENT] Close socket operation, failed to transmit all queued packets\n\r");
+               break;
+            default:
+               CLI_Write(" [SOCK EVENT] Unexpected event \n\r");
+               break;
+         }
+      break;
+      default:
+         CLI_Write(" [SOCK EVENT] Unexpected event \n\r");
+         break;
+   }
+}
+
+/************************************************************************/
+/*This function is used to establish the connection to the Wi-Fi access */
+/*point. So,the SSID_NAME is to be specified.Once the board is connected*/
+/*the function returs a success else will post an error message.	*/
+/************************************************************************/
+static _i32 establishConnectionWithAP(){
+   SlSecParams_t secParams = {0};
+   _i32 retVal = 0;
+   secParams.Key = PASSKEY;
+   secParams.KeyLen = pal_Strlen(PASSKEY);
+   secParams.Type = SEC_TYPE;
+   retVal = sl_WlanConnect(SSID_NAME, pal_Strlen(SSID_NAME), 0, &secParams, 0);
+   ASSERT_ON_ERROR(retVal);
+   while((!IS_CONNECTED(g_Status)) || (!IS_IP_ACQUIRED(g_Status)))
+      _SlNonOsMainLoopTask();
+   return SUCCESS;
+}
+
+/************************************************************************/
+/*This function is used to configure the CC3100 to the default state.This*/
+/*function sets the mode to the STATION mode. 
+/************************************************************************/
+static _i32 configureSimpleLinkToDefaultState(){
+   SlVersionFull   ver = {0};
+   _WlanRxFilterOperationCommandBuff_t  RxFilterIdMask = {0};
+   _u8           val = 1;
+   _u8           configOpt = 0;
+   _u8           configLen = 0;
+   _u8           power = 0;
+   _i32          retVal = -1;
+   _i32          mode = -1;
+   mode = sl_Start(0, 0, 0);
+   ASSERT_ON_ERROR(mode);/* If the device is not in station-mode, try configuring it in staion-mode */
+   if(ROLE_STA != mode){
+      if(ROLE_AP == mode){
+      while(!IS_IP_ACQUIRED(g_Status)) { _SlNonOsMainLoopTask(); }  /* If the device is in AP mode, we need to wait for this event before doing anything */
+      }
+      retVal = sl_WlanSetMode(ROLE_STA);
+      ASSERT_ON_ERROR(retVal);
+      retVal = sl_Stop(SL_STOP_TIMEOUT);
+      ASSERT_ON_ERROR(retVal);
+      retVal = sl_Start(0, 0, 0);
+      ASSERT_ON_ERROR(retVal);  /* Check if the device is in station again */
+      if(ROLE_STA != retVal){
+       ASSERT_ON_ERROR(DEVICE_NOT_IN_STATION_MODE);  /* We don't want to proceed if the device is not coming up in station-mode */
+      }
+   }
+   configOpt = SL_DEVICE_GENERAL_VERSION;
+   configLen = sizeof(ver);
+   retVal = sl_DevGet(SL_DEVICE_GENERAL_CONFIGURATION, &configOpt, &configLen, (_u8 *)(&ver));
+   ASSERT_ON_ERROR(retVal);
+   retVal = sl_WlanPolicySet(SL_POLICY_CONNECTION, SL_CONNECTION_POLICY(1, 0, 0, 0, 1), NULL, 0);
+   ASSERT_ON_ERROR(retVal);
+   retVal = sl_WlanProfileDel(0xFF);
+   ASSERT_ON_ERROR(retVal);
+   retVal = sl_WlanDisconnect();
+   if(0 == retVal){
+      while(IS_CONNECTED(g_Status)) { _SlNonOsMainLoopTask(); }
+   }
+   retVal = sl_NetCfgSet(SL_IPV4_STA_P2P_CL_DHCP_ENABLE,1,1,&val);
+   ASSERT_ON_ERROR(retVal);
+   configOpt = SL_SCAN_POLICY(0);
+   retVal = sl_WlanPolicySet(SL_POLICY_SCAN , configOpt, NULL, 0);
+   ASSERT_ON_ERROR(retVal);
+   power = 0;
+   retVal = sl_WlanSet(SL_WLAN_CFG_GENERAL_PARAM_ID, WLAN_GENERAL_PARAM_OPT_STA_TX_POWER, 1, (_u8 *)&power);
+   ASSERT_ON_ERROR(retVal);
+   retVal = sl_WlanPolicySet(SL_POLICY_PM , SL_NORMAL_POLICY, NULL, 0);  /* Set PM policy to normal */
+   ASSERT_ON_ERROR(retVal);
+   retVal = sl_NetAppMDNSUnRegisterService(0, 0); /* Unregister mDNS services */
+   ASSERT_ON_ERROR(retVal);
+   pal_Memset(RxFilterIdMask.FilterIdMask, 0xFF, 8); /* Remove  all 64 filters (8*8) */
+   retVal = sl_WlanRxFilterSet(SL_REMOVE_RX_FILTER, (_u8 *)&RxFilterIdMask,
+   sizeof(_WlanRxFilterOperationCommandBuff_t));
+   ASSERT_ON_ERROR(retVal);
+   retVal = sl_Stop(SL_STOP_TIMEOUT);
+   ASSERT_ON_ERROR(retVal);
+   retVal = initializeAppVariables();
+   ASSERT_ON_ERROR(retVal);
+   return retVal;  /* Success */
+}
+
+/************************************************************************/
+/*This funtion just displays the starting message for the program.      */
+/************************************************************************/
+static void displayBanner(){
+   CLI_Write("\n\r\n\r");
+   CLI_Write(" TCP socket application - Version ");
+   CLI_Write(APPLICATION_VERSION);
+   CLI_Write("\n\r***************************************************\n\r");
+}
+
+/************************************************************************/
+/*Initialization of the application variables. This function returns a  */
+/*value of 0 on a successful completion of the process else returns an  */
+/*error code.								*/
+/************************************************************************/
+static _i32 initializeAppVariables(){
+   g_Status = 0;
+   pal_Memset(uBuf.BsdBuf, 0, sizeof(uBuf));
+   return SUCCESS;
+}
+
+/************************************************************************/
+/*This function is used to make the CC3100 as a server and establishes a*/
+/*connection with the client to retrieve the data from the client. This */
+/*function makes the sever to acheive the listen mode and waits for the */
+/*signal from the client. After the connection is established,the server*/ 
+/*reads a certain amount of packets from the client.			*/
+/************************************************************************/
+static _i32 BsdTcpServer(_u16 Port){
+   SlSockAddrIn_t  Addr;
+   SlSockAddrIn_t  LocalAddr;
+   _u16          idx = 0;
+   _u16          AddrSize = 0;
+   _i16          SockID = 0;
+   _i32          Status = 0;
+   _i16          newSockID = 0;
+   _u16          LoopCount = 0;
+   _i16          recvSize = 0;
+   for(idx=0 ; idx<BUF_SIZE ; idx++)
+      uBuf.BsdBuf[idx] = (_u8)(idx % 10);
+   LocalAddr.sin_family = SL_AF_INET;
+   LocalAddr.sin_port = sl_Htons((_u16)Port);
+   LocalAddr.sin_addr.s_addr = 0;
+   SockID = sl_Socket(SL_AF_INET,SL_SOCK_STREAM, 0);
+   if(SockID < 0 ){
+      CLI_Write(" [TCP Server] Create socket Error \n\r");
+      ASSERT_ON_ERROR(SockID);
+   }
+   AddrSize = sizeof(SlSockAddrIn_t);
+   Status = sl_Bind(SockID, (SlSockAddr_t *)&LocalAddr, AddrSize);
+   if(Status < 0 ){
+      sl_Close(SockID);
+      CLI_Write(" [TCP Server] Socket address assignment Error \n\r");
+      ASSERT_ON_ERROR(Status);
+   }
+   Status = sl_Listen(SockID, 0);
+   if(Status < 0 ){
+      sl_Close(SockID);
+      CLI_Write(" [TCP Server] Listen Error \n\r");
+      ASSERT_ON_ERROR(Status);
+   }
+   newSockID = sl_Accept(SockID,( struct SlSockAddr_t *)&Addr,(SlSocklen_t*)&AddrSize);
+   if(newSockID < 0 ){
+      sl_Close(SockID);
+      CLI_Write(" [TCP Server] Accept connection Error \n\r");
+      ASSERT_ON_ERROR(newSockID);
+   }
+   while(LoopCount < NO_OF_PACKETS){
+      recvSize = BUF_SIZE;
+      do{
+         Status = sl_Recv(newSockID, &(uBuf.BsdBuf[BUF_SIZE - recvSize]), recvSize, 0); //this function is to send data from client to server and uBuf.BsdBuf has the data
+         if(uBuf.BsdBuf[5]=='0') //If Led1 is assigned 0 then PF1 is turned off
+             GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_1, 0x00);
+         else   //If Led1 is assigned 1 then PF1 is turned on
+             GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_1, 0x02);
+         if(uBuf.BsdBuf[12]=='0' )  //If Led2 is assigned 0 then PF2 is turned off
+             GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_2, 0x00);
+         else   //If Led2 is assigned 1 then PF2 is turned on
+             GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_2, 0x04);
+         uBuf.adc_value[0] = adc_val; //adc value is stored in uBuf.adc_value buffer
+         Status = sl_Send(newSockID, uBuf.adc_value, 1, 0 ); //This function is to send data from server to client
+         sl_Close(newSockID); //closing the socket
+         if( Status <= 0 ){
+         sl_Close(newSockID);
+         sl_Close(SockID);
+         CLI_Write(" [TCP Server] Data recv Error \n\r");
+         ASSERT_ON_ERROR(TCP_RECV_ERROR);
+         }
+       recvSize =0;//-= Status;
+       }
+       while(recvSize > 0);
+       LoopCount = 1001;
+      }
+   Status = sl_Close(newSockID);
+   ASSERT_ON_ERROR(Status);
+   Status = sl_Close(SockID);
+   ASSERT_ON_ERROR(Status);
+   return SUCCESS;
+}
+
+/************************************************************************/
+/* Initialization for LED1(PF1) and LED2(PF2) 				*/
+/************************************************************************/
+void led_output(void){
+   SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOF); //Enable PortF
+   GPIOPinTypeGPIOOutput(GPIO_PORTF_BASE, GPIO_PIN_1|GPIO_PIN_2);//Make PF1 and PF2 as output
+   GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_1|GPIO_PIN_2, 0x00);//Initialize to 0
+}
+
+/************************************************************************/
+/*The ADC0-pin E3 is enabled for storage of values of the potentiometer */
+/************************************************************************/
+void adc_read(){
+   SysCtlPeripheralEnable(SYSCTL_PERIPH_ADC0); //Enable ADC0
+   SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOE); //Enable Port E
+   GPIOPinTypeADC(GPIO_PORTE_BASE,GPIO_PIN_3); //Make PE3 as analog input
+   ADCSequenceConfigure(ADC0_BASE,1,ADC_TRIGGER_PROCESSOR, 0); //Configure ADC
+   ADCSequenceStepConfigure(ADC0_BASE,1,0,ADC_CTL_CH0|ADC_CTL_IE); //ADC Interrupt enabled
+   ADCSequenceEnable(ADC0_BASE,1);
+   ADCProcessorTrigger(ADC0_BASE,1);
+   while(ADCBusy(ADC0_BASE)){}
+   ADCIntClear(ADC0_BASE,1); //ADC interrupt is cleared
+   ADCSequenceDataGet(ADC0_BASE,1,adc_value);//adc_value[1] has the adc converted value
+   adc_val = adc_value[1];
+}
+
+/************************************************************************/
+/*The main function has enabled the required port pins for the input and*/
+/*output of the controller. Calls the function which is used to display */
+/*the starting of the executing program. Then the CC3100 is initialized */
+/*and the device is started and acts as the server station. Then the    */
+/*server waits for the signal from the client for a connection.         */
+/************************************************************************/
+int main(int argc, char** argv){
+   _i32 retVal = -1;
+   led_output(); //calls this function to initialize both red and blue LEDs
+   retVal = initializeAppVariables();
+   ASSERT_ON_ERROR(retVal);
+   stopWDT();//to stop watchdog timer
+   initClk();
+   adc_read();//reads adc value and saves the value globally
+   CLI_Configure();
+   displayBanner();
+   retVal = configureSimpleLinkToDefaultState();
+   if(retVal < 0){
+      if(DEVICE_NOT_IN_STATION_MODE == retVal)
+         CLI_Write(" Failed to configure the device in its default state \n\r");
+      LOOP_FOREVER();
+   }
+   CLI_Write(" Device is configured in default state \n\r");
+   retVal = sl_Start(0, 0, 0);
+   if((retVal < 0) || (ROLE_STA != retVal) ){
+      CLI_Write(" Failed to start the device \n\r");
+      LOOP_FOREVER();
+   }
+   CLI_Write(" Device started as STATION \n\r");
+   retVal = establishConnectionWithAP();//establishes connection with Ap
+   if(retVal < 0){
+      CLI_Write(" Failed to establish connection w/ an AP \n\r");
+      LOOP_FOREVER();
+   }
+   CLI_Write(" Connection established w/ AP and IP is acquired \n\r");
+   CLI_Write(" Establishing connection with TCP server \n\r");
+   CLI_Write(" Starting TCP server\r\n");
+   retVal = BsdTcpServer(PORT_NUM); //calls BdcTcpServer and passes port number as argument
+   if(retVal < 0)
+      CLI_Write(" Failed to start TCP server \n\r");// Starts as TCP server
+   else
+      CLI_Write(" TCP client connected successfully \n\r");
+   retVal = sl_Stop(SL_STOP_TIMEOUT);
+   if(retVal < 0)
+      LOOP_FOREVER();
+   return 0;
+}
+/*********************************************************************/
+/* Steps taken to make the CC3100 as server:
+ 1. tcp_socket program from CC3100-sdk/Examples is used as a base code.
+ 2. The required header files are added in the project explorer. The
+   linker path is changed in Project properties. The required macros
+   are added in ARM Compiler/Advanced options/Predefined Symbols.
+ 3. The IP address in SimpleLinkNetAppEventHandler() is displayed in the
+   terminal.
+ 4. The LED1 and LED2 are initialized and ADC value is read in Port E3. 
+   PE3 is chosen as that pin is not used by CC3100 and is an analog pin.
+ 5. The output of the ADC is in the range 0 to 4095, which must be 
+  scaled into 0 to 255 range as given in the requirement.
+ 6. The client.py is opened in command prompt and run by passing IP 
+  address and port number as two arguments. 
+ 7. The cc3100 starts after server with the ip address
+ 8. When executed, it askes for LED1 and LED2 value, to be ON or OFF 
+ 9. According to the input, the red and blue LED are controlled.  
+10. To read the Response from the client, 
+  sl_Recv(newSockID, &(uBuf.BsdBuf[BUF_SIZE - recvSize]), recvSize, 0) 
+  function is used, where the data from client is stored in the buffer.
+11. To send data to client, sl_Send(newSockID, uBuf.adc_value, 1, 0) is 
+  used, which has the potentiomater value in uBuf.adc_value buffer. */
+/*********************************************************************/
+

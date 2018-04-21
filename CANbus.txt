@@ -1,0 +1,155 @@
+/************************************************************************/
+/* The aim of the program is to interface two Tiva C series(TM4C123GH6PM)*/
+/* Launchpad with a CAN bus protocol (using MCP2551) to provide 2-way   */
+/* communication between two computers.                                 */
+/*                                                                      */
+/* Shanmathi Rajasekar - srajase1@uncc.edu - 800966697                  */
+/* Monica Nethagani - mnethaga@uncc.edu - 801039607                     */
+/*                                                                      */
+/* This project handles two-way communication of data from one computer */
+/* to the other using serial and CAN BUS communication. The message typed*/
+/* in one of the computers is sent serially using UART to first Launchpad*/
+/* and then to one of the MCP2551.Then the signal from TM4C is transmitted*/
+/* to the second MCP2551 via can bus. Then the signal is sent to the     */
+/* second launchpad from where it is transmitted to the second computer  */
+/* and is displayed on the terminal. The following program is used for   */
+/* both transmitter end and receiver end. The program sends and receives */
+/* data, thus establishing communication between computers. The terminal */
+/* used is Tera term.                                                    */
+/* The following program was written with TivaWare_C_Series-2.1.4.178 in */
+/* Code Composer Studio 7.3.0                                           */
+/************************************************************************/
+
+/************************************************************************/
+/* All the standard header files required for the program are included  */
+/************************************************************************/
+#include <stdbool.h>
+#include <stdint.h>
+#include "inc/hw_can.h"
+#include "inc/hw_ints.h"
+#include "inc/hw_memmap.h"
+#include "driverlib/can.h"
+#include "driverlib/gpio.h"
+#include "driverlib/interrupt.h"
+#include "driverlib/pin_map.h"
+#include "driverlib/sysctl.h"
+#include "driverlib/uart.h"
+#include "uartstdio.h"
+/************************************************************************/
+/* Initialization of global variables                                   */
+/************************************************************************/
+char data_rx;
+char data_tx;
+/************************************************************************/
+/* can_Init() - This function initializes the CAN bus. CAN0 is used with*/
+/* 500000 bitrate. The CAN transmitter and receiver of are connected to */
+/* transmitter and receiver of MCP2551. This function is common to both */
+/* transmitter and receiver.                                            */
+/* CAN Transmitter - PB5                                                */
+/* CAN Receiver - PB4                                                   */
+/************************************************************************/
+void can_Init(void){
+   SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOB); //Enable PortB
+   while(!SysCtlPeripheralReady(SYSCTL_PERIPH_GPIOB)){}
+   GPIOPinConfigure(GPIO_PB4_CAN0RX); //PB4 as Rx
+   GPIOPinConfigure(GPIO_PB5_CAN0TX); //PB5 as Tx
+   GPIOPinTypeCAN(GPIO_PORTB_BASE, GPIO_PIN_4|GPIO_PIN_5);
+
+   SysCtlPeripheralEnable(SYSCTL_PERIPH_CAN0); //CAN0 enabled
+   while(!SysCtlPeripheralReady(SYSCTL_PERIPH_CAN0)){}
+   CANInit(CAN0_BASE); //Initializes the CAN controller after reset
+   CANBitRateSet(CAN0_BASE, SysCtlClockGet(), 500000); //Sets the CAN bit timing values based on a desired bit rate
+   CANEnable(CAN0_BASE); //Enable CAN
+}
+/************************************************************************/
+/* uart_Init()-This function initializes UART. UART0 is used with 115200*/
+/* as baudrate. From boards to computer USB is used to serially transmit*/
+/* the data. This function is common to both transmitter and receiver.  */
+/* UART Transmitter - PA1                                               */
+/* UART Receiver - PA0                                                  */
+/************************************************************************/
+void uart_Init(void){
+   SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOA);//Port A enable
+   SysCtlPeripheralEnable(SYSCTL_PERIPH_UART0);//UART0 enable
+   GPIOPinConfigure(GPIO_PA0_U0RX);//PB0 is set as Rx
+   GPIOPinConfigure(GPIO_PA1_U0TX);//PB1 is set as Tx
+   GPIOPinTypeUART(GPIO_PORTA_BASE, GPIO_PIN_0 | GPIO_PIN_1);//UART input pins
+   UARTConfigSetExpClk(UART0_BASE, SysCtlClockGet(), 115200,(UART_CONFIG_WLEN_8 | UART_CONFIG_STOP_ONE | UART_CONFIG_PAR_NONE));
+   //Baudrate of 115200 is used (make sure you use the same in tera term)
+}
+/************************************************************************/
+/* main()-Clock is set and UART and CAN bus are initialized. An infinite*/
+/* loop of transmission and reception code is written. If any data is   */
+/* available in UART0, it will act as transmitter or if CAN New message */
+/* flag is 1, it will act as receiver.                                  */
+/* The message ID for transmitter and receiver is defined. The receiver */
+/* can receive data only when the ID matches with the transmitter's ID  */
+/************************************************************************/
+void main(){
+   SysCtlClockSet(SYSCTL_SYSDIV_2_5|SYSCTL_USE_PLL|SYSCTL_OSC_MAIN|SYSCTL_XTAL_16MHZ);
+   uart_Init(); //calls UART initialization function
+   tCANMsgObject sMsgObjectRxC; //for receiver
+   can_Init(); //calls CAN initialization function
+
+   sMsgObjectRxC.ui32MsgID=0x400; //Receiver ID
+   sMsgObjectRxC.ui32Flags=MSG_OBJ_NO_FLAGS;
+   CANMessageSet(CAN0_BASE, 1, &sMsgObjectRxC, MSG_OBJ_TYPE_RX);
+   CANEnable(CAN0_BASE) ;
+
+   while(1){
+      //Transmitter
+      if(UARTCharsAvail(UART0_BASE)){ //checks if data is available in  UART0
+         data_tx=UARTCharGet(UART0_BASE); //The data to be transmitted is stored in a variable
+         uint8_t uiMsgData;
+         tCANMsgObject sCANMessageTx; //for transmitter
+         uiMsgData = (int)data_tx;
+         sCANMessageTx.ui32MsgID= 0x400; //transmitter ID
+         sCANMessageTx.ui32MsgIDMask= 0;
+         sCANMessageTx.ui32Flags= 0;
+         sCANMessageTx.ui32MsgLen= 1;
+         sCANMessageTx.pui8MsgData= &uiMsgData; //ASCII value of typed data is copied into CAN data
+         CANMessageSet(CAN0_BASE,1,&sCANMessageTx,MSG_OBJ_TYPE_TX); //The data is transmitted through CAN0
+         //CANMessageSet sends the data which can be seen in CAN0 IF1 data registers
+      }
+      tCANMsgObject sMsgObjectRxC;
+      sMsgObjectRxC.ui32MsgID= 0x400;//Receiver ID
+      sMsgObjectRxC.ui32Flags= MSG_OBJ_NO_FLAGS;
+      CANMessageSet(CAN0_BASE,1,&sMsgObjectRxC,MSG_OBJ_TYPE_RX);
+      //Receiver is set and the received data is found in &sMsgObjectRxC
+      if((CANStatusGet(CAN0_BASE, CAN_STS_NEWDAT) & 1) == 1){ //checks the NewData flag. If set, new data is received
+         CANMessageGet(CAN0_BASE, 1, &sMsgObjectRxC, true); //It gets the received value
+         data_rx=sMsgObjectRxC.pui8MsgData[0]; //received data is stored in a variable
+         UARTCharPut(UART0_BASE,data_rx); //The received data is serially sent to computer through UART0
+      }
+   }
+}
+/************************************************************************/
+/* CAN Bus Communication Using Tiva board                               */
+/*                                                                      */
+/* README FILE:                                                         */
+/* The aim of the program is to interface two Tiva C series Launchpad   */
+/* (TM4C123GH6PM) with a CAN bus protocol (using MCP2551) to provide    */
+/* two-way communication between two computers.                         */
+/*                                                                      */
+/* Board used - TI's TM4C123GH6PM                                       */
+/* IDE - Code Composer Studio 7.3.0                                     */
+/* TivaWare_C_Series-2.1.4.178                                          */
+/*                                                                      */
+/* Steps to Compile :                                                   */
+/* 1. Download CCS and Tivaware.                                        */
+/* 2. Open a new CCS project (File/new/project).                        */
+/* 3. Add the required header files in Project Explorer or you can also */
+/* link the files by adding the path in ARM Compiler/Include Options and*/
+/* by adding the driver.lib in ARM Linker/File Search Path.             */
+/* 4. This program should be kept in main file.                         */
+/* 5. Build the program and check for errors.                           */
+/* 6. Connect the two tiva boards through USB                           */
+/* 7. Open Tera term for both transmitter and receiver and select the   */
+/* comm port for 'serial' option.                                       */
+/* 8. Change the baud rate in Setup/Serial port. The baud rate should be*/
+/* set to 115200 as we have mentioned in the program.                   */
+/* 9. If there are no errors found in the program, debug and run the    */
+/* code by clicking the play button.                                    */
+/* 10. Type anything in computer 1 and it will be displayed in computer */
+/* and vice versa.                                                      */
+/************************************************************************/

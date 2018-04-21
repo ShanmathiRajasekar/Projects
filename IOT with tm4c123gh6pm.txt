@@ -1,0 +1,723 @@
+//Steps taken to make the CC3100 to pull the values from the server have
+//been added after the source code
+
+/************************************************************************/
+/*The aim of the program is to post the potentiometer values which are  */
+/*change manually to the given URL server link using the GET method.    */
+/*Shanmathi Rajasekar - Srajase1@uncc.edu - 800966697                   */
+/*Monica Nethagani    - mnethaga@uncc.edu - 801039607                   */
+/*17-November-2017                              Pot value - 20k Ohm     */
+/*The Wi-Fi model (CC3100) is connected to the "Embedded_Lab_EXT" Wi-Fi */
+/*network by changing the SSID_NAME, PASSKEY and SEC_TYPE in sl_common.h*/
+/*folder as specified. The client folder from the netapps is included in*/
+/*the compiler path. The potentiometer values are read and sent to the  */
+/*server every 5 seconds using the timer interrupt. The POT values are  */
+/*displayed on the link:192.168.2.18/?func=show&ID=801039607&POT=       */
+/*continuously.The value which is posted on the HTTP URL server link is */
+/*192.168.2.18/?func=save&ID=801039607 is to be changed and displayed on*/
+/*the terminal panel using JSON parser.                                 */
+/*The client program in the netapps in used from which the GET method is*/
+/*is used to post the POT values to the HTTP server. The client program */
+/*also has the JSON parser which is used for parsing the data from HTTP.*/
+/************************************************************************/
+
+/************************************************************************/
+/*All the standard header files required for the program are included.  */
+/************************************************************************/
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "stdint.h"
+#include<stdbool.h>
+
+/************************************************************************/
+/*The required header files and the required driver library are included*/
+/************************************************************************/
+#include"tm4c123gh6pm.h"
+#include "driverlib/interrupt.h"
+#include "driverlib/timer.h"
+#include"inc/hw_memmap.h"
+#include"inc/hw_types.h"
+#include "inc/hw_ints.h"
+#include"driverlib/pin_map.h"
+#include"driverlib/gpio.h"
+#include"driverlib/debug.h"
+#include"driverlib/sysctl.h"
+#include"driverlib/adc.h"
+#include"driverlib/uart.h"
+#include"driverlib/uart.h"
+
+/************************************************************************/
+/*The header files linking the the functions to the client program, json*/
+/*program and the Wi-Fi connect network are included.                   */
+/************************************************************************/
+#include "simplelink.h"
+#include "sl_common.h"
+#include "httpcli.c"
+#include "httpcli.h"
+#include "ssock.h"
+#include "ssock.c"
+#include "jsmn.c"
+#include "jsmn.h"
+
+/************************************************************************/
+/*The Wi-Fi module is connected with the Embedded_Lab_EXT Wi-Fi network */
+/*Initialization the static functions and display of the start.         */
+/************************************************************************/
+static _i32 establishConnectionWithAP();
+static _i32 configureSimpleLinkToDefaultState();
+static _i32 initializeAppVariables();
+static void displayBanner();
+static _i32 ConnectToHTTPServer(HTTPCli_Handle httpClient);
+static _i32 HTTPGetMethod(HTTPCli_Handle httpClient);
+static _i32 readResponse(HTTPCli_Handle httpClient);
+static void FlushHTTPResponse(HTTPCli_Handle httpClient);
+static _i32 ParseJSONData(_i8 *ptr);
+
+/************************************************************************/
+/*Initialization of global variables.                                   */
+/*Setting the HTTP URL link.                                            */
+/************************************************************************/
+uint32_t ADC_Value[1];
+_i32            retVal = -1;
+HTTPCli_Struct     httpClient;
+int adc_val;
+int flag_timer = 0;
+char GET_REQUEST_URI[32] =     "/?func=save&ID=801039607&POT=";
+
+/************************************************************************/
+/*Defining the URL path and the parameters of URL link as required.     */
+/************************************************************************/
+#define APPLICATION_VERSION    "1.2.0"
+#define SL_STOP_TIMEOUT        0xFF
+#define HOST_NAME              "192.168.2.18"
+#define HOST_PORT              80
+#define PROXY_IP               0xBA5FB660
+#define PROXY_PORT             0xC0A80212
+#define READ_SIZE              1450
+#define MAX_BUFF_SIZE          1460
+#define SPACE                  32
+
+_u32 g_Status;
+_u32 g_DestinationIP;
+_u32 g_BytesReceived;
+_u8  g_buff[MAX_BUFF_SIZE+1];
+_i32 g_SockID = 0;
+
+typedef enum{
+   DEVICE_NOT_IN_STATION_MODE = -0x7D0,
+   INVALID_HEX_STRING = DEVICE_NOT_IN_STATION_MODE - 1,
+   TCP_RECV_ERROR = INVALID_HEX_STRING - 1,
+   TCP_SEND_ERROR = TCP_RECV_ERROR - 1,
+   FILE_NOT_FOUND_ERROR = TCP_SEND_ERROR - 1,
+   INVALID_SERVER_RESPONSE = FILE_NOT_FOUND_ERROR - 1,
+   FORMAT_NOT_SUPPORTED = INVALID_SERVER_RESPONSE - 1,
+   FILE_WRITE_ERROR = FORMAT_NOT_SUPPORTED - 1,
+   INVALID_FILE = FILE_WRITE_ERROR - 1,
+   STATUS_CODE_MAX = -0xBB8
+}e_AppStatusCodes;
+
+/************************************************************************/
+/*This function provide the asynchronous start of the WLAN event handler*/
+/*using the pWLANEVENT as the event passed to the WLAN event handler.   */
+/************************************************************************/
+void SimpleLinkWlanEventHandler(SlWlanEvent_t *pWlanEvent){
+   if(pWlanEvent == NULL){
+       CLI_Write(" [WLAN EVENT] NULL Pointer Error \n\r");
+       return;
+      }
+   switch(pWlanEvent->Event){
+       case SL_WLAN_CONNECT_EVENT:
+          {
+           SET_STATUS_BIT(g_Status, STATUS_BIT_CONNECTION);
+          }
+        break;
+       case SL_WLAN_DISCONNECT_EVENT:
+          {
+           slWlanConnectAsyncResponse_t*  pEventData = NULL;
+           CLR_STATUS_BIT(g_Status, STATUS_BIT_CONNECTION);
+           CLR_STATUS_BIT(g_Status, STATUS_BIT_IP_ACQUIRED);
+           pEventData = &pWlanEvent->EventData.STAandP2PModeDisconnected;
+           if(SL_WLAN_DISCONNECT_USER_INITIATED_DISCONNECTION == pEventData->reason_code){
+               CLI_Write(" Device disconnected from the AP on application's request \n\r");
+              }
+           else{
+               CLI_Write(" Device disconnected from the AP on an ERROR..!! \n\r");
+              }
+           }
+           break;
+        default:
+           {
+            CLI_Write(" [WLAN EVENT] Unexpected event \n\r");
+           }
+        break;
+    }
+}
+
+/************************************************************************/
+/*This function provides the asynchronous start of the IP events handler*/
+/*using pNETAPPEVENT as an event passed to IP using the DHCP indication.*/
+/************************************************************************/
+void SimpleLinkNetAppEventHandler(SlNetAppEvent_t *pNetAppEvent){
+   if(pNetAppEvent == NULL)
+      {
+      CLI_Write(" [NETAPP EVENT] NULL Pointer Error \n\r");
+      return;
+      }
+   switch(pNetAppEvent->Event){
+      case SL_NETAPP_IPV4_IPACQUIRED_EVENT:
+         {
+         SET_STATUS_BIT(g_Status, STATUS_BIT_IP_ACQUIRED);
+         }
+        break;
+      default:
+         {
+         CLI_Write(" [NETAPP EVENT] Unexpected event \n\r");
+         }
+        break;
+   }
+}
+
+/************************************************************************/
+/*This function deals with the HTTP server events by using the callback */
+/*handler. There are 2 handlers used:                                   */
+/*       pHttpEvent    : It contains the relevant event information     */
+/*       pHttpResponse : It should be filled by the user with regards to*/
+/*                       the pHttpEvent information                     */
+/************************************************************************/
+void SimpleLinkHttpServerCallback(SlHttpServerEvent_t *pHttpEvent,SlHttpServerResponse_t *pHttpResponse){
+   CLI_Write(" [HTTP EVENT] Unexpected event \n\r");
+}
+
+/************************************************************************/
+/*This function is used for debugging the usual occurrence of the error */
+/*events. The pDevEvent is the variable used as a handler which is to be*/
+/*passed to the event.                                                  */
+/************************************************************************/
+void SimpleLinkGeneralEventHandler(SlDeviceEvent_t *pDevEvent){
+   CLI_Write(" [GENERAL EVENT] \n\r");
+}
+
+/************************************************************************/
+/*This function is used for debugging the occurrence of the Socket error*/
+/*events. The pSock is the variable used as a handler which is passed to*/
+/*the event. When the transmission is done,null point error is displayed*/
+/*When the transmission is failed, the data from the socket is stored in*/
+/*the SlSockEventData_t                                                 */
+/************************************************************************/
+void SimpleLinkSockEventHandler(SlSockEvent_t *pSock){
+   if(pSock == NULL){
+      CLI_Write(" [SOCK EVENT] NULL Pointer Error \n\r");
+      return;
+      }
+   switch( pSock->Event ){
+      case SL_SOCKET_TX_FAILED_EVENT:
+         {
+         switch( pSock->socketAsyncEvent.SockTxFailData.status )
+            {
+            case SL_ECLOSE:
+               CLI_Write(" [SOCK EVENT] Close socket operation failed to transmit all queued packets\n\r");
+               break;
+            default:
+               CLI_Write(" [SOCK EVENT] Unexpected event \n\r");
+               break;
+            }
+        }
+      break;
+      default:
+         CLI_Write(" [SOCK EVENT] Unexpected event \n\r");
+         break;
+   }
+}
+
+/************************************************************************/
+/*The ADC0-pin 3 is enabled for storage of values of the potentiometer  */
+/************************************************************************/
+void adc_read(){
+   SysCtlPeripheralEnable(SYSCTL_PERIPH_ADC0); //Enable ADC0
+   SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOE); //Enable Port E
+   GPIOPinTypeADC(GPIO_PORTE_BASE,GPIO_PIN_3); //Make PE3 as analog input
+   ADCSequenceConfigure(ADC0_BASE, 1, ADC_TRIGGER_PROCESSOR, 0); //Configure ADC
+   ADCSequenceStepConfigure(ADC0_BASE, 1, 0, ADC_CTL_CH0);
+   ADCSequenceEnable(ADC0_BASE, 1);
+   ADCProcessorTrigger(ADC0_BASE, 1);
+   ADCSequenceDataGet(ADC0_BASE, 1, ADC_Value); //ADC_value[1] has the ADC converted values in 0-4095 range
+   adc_val= ADC_Value[1]/16; //ADC_value is scaled to 0 to 255
+}
+/************************************************************************/
+/*Enabling the timer 0 and configuring in one shot mode for acquiring   */
+/*the data continuously on the provided URL link.                       */
+/************************************************************************/
+void enabletimer(void){
+   uint32_t time_period;
+   SysCtlPeripheralEnable(SYSCTL_PERIPH_TIMER0); //Enable Timer0
+   TimerConfigure(TIMER0_BASE, TIMER_CFG_A_ONE_SHOT); //Configure Timer to One shot
+   time_period = SysCtlClockGet()/0.2 ;
+   TimerLoadSet(TIMER0_BASE, TIMER_A, time_period -1); //Load timer to 5 seconds
+   IntEnable(INT_TIMER0A); //Enable Interrupt
+   TimerIntEnable(TIMER0_BASE, TIMER_TIMA_TIMEOUT); //Enable Timer Interrupt
+   IntMasterEnable(); //eNABLE mASTER iNTERUUPT
+   TimerEnable( TIMER0_BASE, TIMER_A ); //Enable Timer
+}
+/************************************************************************/
+/*The POT values are displayed by converting the ADC values.The scaled values
+/************************************************************************/
+void add_char_voltage (void){
+   int val1,val2;
+   val1=0;
+   val1=adc_val/100; //here Val1 will have the MSB (eg- 2 in 245 value)
+   GET_REQUEST_URI[29]=val1+48; //The MSB is added to the string, GET_REQUEST_URI. 48 is added, as initially it was pointing to NULL
+   val2=val2-(val1*100); //here 200 is subtracted from 245
+   val1=val2/10;
+   GET_REQUEST_URI[30]=val1+48; //middle value is added to the string
+   val2=val2-val1*10;
+   GET_REQUEST_URI[31]=val2+48; //LSB is added to the string
+}
+
+void get_and_timer(void){
+   if(flag_timer!=0){ //timer_flag is checked
+      CLI_Write("\n\r");
+      CLI_Write(" HTTP Get Test Begin:\n\r");
+      add_char_voltage(); //to add voltage value to URI string
+      retVal = HTTPGetMethod(&httpClient); //posts in server
+      flag_timer = 0; //Makes timer flag=0
+      if(retVal < 0)
+         CLI_Write(" HTTP Get Test failed.\n\r");
+         CLI_Write(" HTTP Get Test Completed Successfully\n\r");
+         CLI_Write("\n\r");
+   }
+}
+
+void get_connected_to_server(void){
+   retVal = sl_Start(0, 0, 0);
+   if((retVal < 0) || (ROLE_STA != retVal)){
+      CLI_Write(" Failed to start the device \n\r");
+      LOOP_FOREVER();
+   }
+   CLI_Write(" Device started as STATION \n\r");
+   retVal = establishConnectionWithAP(); //function to establish connection with Wi-Fi
+      //Here the module is connected to the our lab wifi to access server
+      if(retVal < 0){
+         CLI_Write(" Failed to establish connection w/ an AP \n\r");
+         LOOP_FOREVER();
+      }
+      CLI_Write(" Connection established w/ AP and IP is acquired \n\r");
+      retVal = ConnectToHTTPServer(&httpClient); //Connects to the server
+      if(retVal < 0)      LOOP_FOREVER();
+}
+
+void Timer0_IntHandler(void){
+   TimerIntClear( TIMER0_BASE, TIMER_TIMA_TIMEOUT ); //TimerInt cleared
+   flag_timer = 1;
+}
+
+/************************************************************************/
+/*The main program is defined as the start of the application.The system*/
+/*clock is set to 40MHZ. The clock peripherals and the initial start of */
+/*the display function are declared. In the main program, the POT values*/
+/*are read continuously with a change in the value and are loaded to the*/
+/*terminal and the specified URL link with the help of ADC peripherals &*/
+/*TIMER peripherals functioning as the interrupts.                      */
+/************************************************************************/
+int main(int argc, char** argv){
+   SysCtlClockSet( SYSCTL_SYSDIV_5 | SYSCTL_USE_PLL | SYSCTL_XTAL_16MHZ | SYSCTL_OSC_MAIN );//40MHz clock
+   stopWDT();
+   initClk(); //Initialize clock
+   CLI_Configure();
+   displayBanner();
+   retVal = initializeAppVariables();
+   ASSERT_ON_ERROR(retVal);
+   retVal = configureSimpleLinkToDefaultState();
+   if(retVal < 0)
+      {
+      if (DEVICE_NOT_IN_STATION_MODE == retVal)
+         CLI_Write(" Failed to configure the device in its default state \n\r");
+      LOOP_FOREVER();
+      }
+   CLI_Write(" Device is configured in default state \n\r");
+   enabletimer(); //For timer Initialization
+   while(1)
+      {
+      get_connected_to_server(); //Calls this function to get connected to the given server
+      adc_read(); //ADC value is read
+      get_and_timer(); //Post the adc value in server once in 5 seconds using Timer
+   }
+}
+
+/************************************************************************/
+/*This function is used for setting the HTTP URL set path & getting the */
+/*address and posting the link on the terminal on CCS.                  */
+/************************************************************************/
+static _i32 HTTPGetMethod(HTTPCli_Handle httpClient){
+   _i32             retVal = 0;
+   bool             moreFlags;
+   const HTTPCli_Field    fields[4] = {
+                                    {HTTPCli_FIELD_NAME_HOST, HOST_NAME},
+                                    {HTTPCli_FIELD_NAME_ACCEPT, "*/*"},
+                                    {HTTPCli_FIELD_NAME_CONTENT_LENGTH, "0"},
+                                    {NULL, NULL}
+                                };
+    HTTPCli_setRequestFields(httpClient, fields);
+   moreFlags = 0;
+   CLI_Write(GET_REQUEST_URI); //Updated URI
+   CLI_Write("\n");
+   retVal = HTTPCli_sendRequest(httpClient, HTTPCli_METHOD_GET, GET_REQUEST_URI, moreFlags); //Requests connection to the server
+   if(retVal < 0){
+      CLI_Write(" Failed to send HTTP GET request.\n\r");
+      return retVal;
+      }
+   retVal = readResponse(httpClient); //Reads resonse from Server
+   return retVal;
+}
+
+/************************************************************************/
+/*This function is for loading the response from the server and updating*/
+/*the value on the console of the CCS. This function utilizes the json  */
+/*parsing function.                                                     */
+/************************************************************************/
+static _i32 readResponse(HTTPCli_Handle httpClient){
+   _i32            retVal = 0;
+   _i32            bytesRead = 0;
+   _i32            id = 0;
+   _u32            len = 0;
+   _i32            json = 0;
+   _i8             *dataBuffer=NULL;
+   bool            moreFlags = 1;
+   const _i8       *ids[4] = {
+                             HTTPCli_FIELD_NAME_CONTENT_LENGTH,
+                             HTTPCli_FIELD_NAME_CONNECTION,
+                             HTTPCli_FIELD_NAME_CONTENT_TYPE,
+                             NULL
+                             };
+   retVal = HTTPCli_getResponseStatus(httpClient);
+   if(retVal > 0){
+      switch(retVal){
+         case 200:
+         {
+         CLI_Write(" HTTP Status 200\n\r");
+         HTTPCli_setResponseFields(httpClient, (const char **)ids);
+         while((id = HTTPCli_getResponseField(httpClient, (char *)g_buff, sizeof(g_buff), &moreFlags))!= HTTPCli_FIELD_ID_END){
+            switch(id){
+               case 0:
+                  {
+                  len = strtoul((char *)g_buff, NULL, 0);
+                  }
+               break;
+               case 1:
+                  {
+                  }
+               break;
+               case 2:
+                  {
+                  if(!strncmp((const char *)g_buff, "application/json", sizeof("application/json")))
+                     json = 1;
+                  else
+                     json = 0;
+                  CLI_Write(" ");
+                  CLI_Write(HTTPCli_FIELD_NAME_CONTENT_TYPE);
+                  CLI_Write(" : ");
+                  CLI_Write("application/json\n\r");
+                  break;
+               default:
+                  {
+                  CLI_Write(" Wrong filter id\n\r");
+                  retVal = -1;
+                  goto end;
+                  }
+               }
+            }
+            bytesRead = 0;
+            if(len > sizeof(g_buff)){
+               dataBuffer = (_i8 *) malloc(len);
+               if(dataBuffer){
+                  CLI_Write(" Failed to allocate memory\n\r");
+                  retVal = -1;
+                  goto end;
+                  }
+               }
+            else{
+               dataBuffer = (_i8 *)g_buff;
+               }
+            bytesRead = HTTPCli_readResponseBody(httpClient, (char *)dataBuffer, len, &moreFlags);
+            if(bytesRead < 0){
+               CLI_Write(" Failed to received response body\n\r");
+               retVal = bytesRead;
+               goto end;
+               }
+            else if( bytesRead < len || moreFlags){
+               CLI_Write(" Mismatch in content length and received data length\n\r");
+               goto end;
+               }
+            dataBuffer[bytesRead] = '\0';
+            CLI_Write(dataBuffer);
+            if(json){
+               retVal = ParseJSONData(dataBuffer);
+               if(retVal < 0)
+                  goto end;
+               }
+            else
+               {
+               }
+           }
+           break;
+        case 404:
+           CLI_Write(" File not found. \r\n");
+        default:
+           FlushHTTPResponse(httpClient);
+           break;
+        }
+      }
+    }
+    else{
+        CLI_Write(" Failed to receive data from server.\r\n");
+        goto end;
+    }
+    retVal = 0;
+end:
+   if(len > sizeof(g_buff) && (dataBuffer != NULL))
+      free(dataBuffer);
+   return retVal;
+}
+
+static void FlushHTTPResponse(HTTPCli_Handle httpClient){
+   const _i8       *ids[2] = {
+                             HTTPCli_FIELD_NAME_CONNECTION,
+                             NULL
+                             };
+   _i8             buf[128];
+   _i32            id;
+   _i32            len = 1;
+   bool            moreFlag = 0;
+   _i8             **prevRespFilelds = NULL;
+   prevRespFilelds = (_i8 **)HTTPCli_setResponseFields(httpClient, (const char **)ids);
+   while ((id = HTTPCli_getResponseField(httpClient, (char *)buf, sizeof(buf), &moreFlag))!= HTTPCli_FIELD_ID_END){
+      if(id == 0){
+         if(!strncmp((const char *)buf, "close", sizeof("close"))){
+            CLI_Write(" Connection terminated by server\n\r");
+            }
+         }
+      }
+   HTTPCli_setResponseFields(httpClient, (const char **)prevRespFilelds);
+   while(1){
+       HTTPCli_readResponseBody(httpClient, (char *)buf, sizeof(buf) - 1, &moreFlag);
+       CLI_Write((_u8 *)buf);
+       CLI_Write("\r\n");
+       if ((len - 2) >= 0 && buf[len - 2] == '\r' && buf [len - 1] == '\n'){
+        }
+        if(!moreFlag){
+           break;
+        }
+    }
+}
+
+static _i32 ConnectToHTTPServer(HTTPCli_Handle httpClient){
+   _i32                retVal = -1;
+   struct sockaddr_in     addr;
+
+#ifdef USE_PROXY
+   struct sockaddr_in     paddr;
+   paddr.sin_family = AF_INET;
+   paddr.sin_port = htons(PROXY_PORT);
+   paddr.sin_addr.s_addr = sl_Htonl(PROXY_IP);
+   HTTPCli_setProxy((struct sockaddr *)&paddr);
+#endif
+   retVal = sl_NetAppDnsGetHostByName(HOST_NAME, pal_Strlen(HOST_NAME),&g_DestinationIP, SL_AF_INET);
+   if(retVal < 0){
+      CLI_Write(" Device couldn't get the IP for the host-name\r\n");
+      ASSERT_ON_ERROR(retVal);
+      }
+   addr.sin_family = AF_INET;
+   addr.sin_port = htons(HOST_PORT);
+   addr.sin_addr.s_addr = sl_Htonl(g_DestinationIP);
+   HTTPCli_construct(httpClient);
+   retVal = HTTPCli_connect(httpClient, (struct sockaddr *)&addr, 0, NULL);
+   if(retVal < 0){
+      CLI_Write("Connection to server failed\n\r");
+      ASSERT_ON_ERROR(retVal);
+   }
+   CLI_Write(" Successfully connected to the server \r\n");
+   return SUCCESS;
+}
+
+/************************************************************************/
+/*The function define the working of json as parser which should display*/
+/*the value which is posted on the URL link to the terminal on CCS      */
+/*The variable noOfToken stores how many values are to be considered and*/
+/*variable tockenList allocates the memory for the values to be stored  */
+/************************************************************************/
+static _i32 ParseJSONData(_i8 *ptr){
+   _i32            retVal = 0;
+   _i32            noOfToken;
+   jsmn_parser     parser;
+   jsmntok_t       tokenList[3];
+   _i8             printBuffer[4];
+   jsmn_init(&parser);
+   noOfToken = jsmn_parse(&parser, (const char *)ptr, strlen((const char *)ptr), NULL, 10);
+   if(noOfToken <= 0){
+      CLI_Write(" Failed to initialize JSON parser\n\r");
+      return -1;
+      }
+   if(tokenList == NULL){
+      CLI_Write(" Failed to allocate memory\n\r");
+      return -1;
+      }
+   jsmn_init(&parser);
+   noOfToken = jsmn_parse(&parser, (const char *)ptr, strlen((const char *)ptr), tokenList, noOfToken);
+   if(noOfToken < 0){
+      CLI_Write(" Failed to parse JSON tokens\n\r");
+      retVal = noOfToken;
+      }
+   else{
+      CLI_Write(" Successfully parsed ");
+      sprintf((char *)printBuffer, "%ld", noOfToken);
+      CLI_Write((_u8 *)printBuffer);
+      CLI_Write(" JSON tokens\n\r");
+   }
+   free(tokenList);
+   return retVal;
+}
+
+/************************************************************************/
+/*This function is used for displaying the start of the application with*/
+/*the HTTP client version.                                              */
+/************************************************************************/
+static void displayBanner(){
+   CLI_Write("\n\r\n\r");
+   CLI_Write(" HTTP Client - Version ");
+   CLI_Write(APPLICATION_VERSION);
+   CLI_Write("\n\r**************************************************************************\n\r");
+}
+
+static _i32 configureSimpleLinkToDefaultState(){
+   SlVersionFull   ver = {0};
+   _WlanRxFilterOperationCommandBuff_t  RxFilterIdMask = {0};
+   _u8           val = 1;
+   _u8           configOpt = 0;
+   _u8           configLen = 0;
+   _u8           power = 0;
+   _i32          retVal = -1;
+   _i32          mode = -1;
+   mode = sl_Start(0, 0, 0);
+   ASSERT_ON_ERROR(mode);
+   if(ROLE_STA != mode){
+      if(ROLE_AP == mode){
+         while(!IS_IP_ACQUIRED(g_Status)) { _SlNonOsMainLoopTask(); }
+         }
+      retVal = sl_WlanSetMode(ROLE_STA);
+      ASSERT_ON_ERROR(retVal);
+      retVal = sl_Stop(SL_STOP_TIMEOUT);
+      ASSERT_ON_ERROR(retVal);
+      retVal = sl_Start(0, 0, 0);
+      ASSERT_ON_ERROR(retVal);
+      if(ROLE_STA != retVal){
+         ASSERT_ON_ERROR(DEVICE_NOT_IN_STATION_MODE);
+         }
+      }
+   configOpt = SL_DEVICE_GENERAL_VERSION;
+   configLen = sizeof(ver);
+   retVal = sl_DevGet(SL_DEVICE_GENERAL_CONFIGURATION, &configOpt, &configLen, (_u8 *)(&ver));
+   ASSERT_ON_ERROR(retVal);
+   retVal = sl_WlanPolicySet(SL_POLICY_CONNECTION, SL_CONNECTION_POLICY(1, 0, 0, 0, 1), NULL, 0);
+   ASSERT_ON_ERROR(retVal);
+   retVal = sl_WlanProfileDel(0xFF);
+   ASSERT_ON_ERROR(retVal);
+   retVal = sl_WlanDisconnect();
+   if(0 == retVal)
+      while(IS_CONNECTED(g_Status)) { _SlNonOsMainLoopTask(); }
+   retVal = sl_NetCfgSet(SL_IPV4_STA_P2P_CL_DHCP_ENABLE,1,1,&val);
+   ASSERT_ON_ERROR(retVal);
+   configOpt = SL_SCAN_POLICY(0);
+   retVal = sl_WlanPolicySet(SL_POLICY_SCAN , configOpt, NULL, 0);
+   ASSERT_ON_ERROR(retVal);
+   power = 0;
+   retVal = sl_WlanSet(SL_WLAN_CFG_GENERAL_PARAM_ID, WLAN_GENERAL_PARAM_OPT_STA_TX_POWER, 1, (_u8 *)&power);
+   ASSERT_ON_ERROR(retVal);
+   retVal = sl_WlanPolicySet(SL_POLICY_PM , SL_NORMAL_POLICY, NULL, 0);
+   ASSERT_ON_ERROR(retVal);
+   retVal = sl_NetAppMDNSUnRegisterService(0, 0);
+   ASSERT_ON_ERROR(retVal);
+   pal_Memset(RxFilterIdMask.FilterIdMask, 0xFF, 8);
+   retVal = sl_WlanRxFilterSet(SL_REMOVE_RX_FILTER, (_u8 *)&RxFilterIdMask,sizeof(_WlanRxFilterOperationCommandBuff_t));
+   ASSERT_ON_ERROR(retVal);
+   retVal = sl_Stop(SL_STOP_TIMEOUT);
+   ASSERT_ON_ERROR(retVal);
+   retVal = initializeAppVariables();
+   ASSERT_ON_ERROR(retVal);
+   return retVal;
+}
+
+/************************************************************************/
+/*This function is used for establishing a connection between the module*/
+/*and the WLAN access point. This function makes a connection with Wi-Fi*/
+/*by using the required SSID_NAME. Since, it is of static data type, it */
+/*returns a value 0 implying a success or else a negative error-code for*/
+/*a value other than 0.If there is a failure in the connections or error*/
+/*in getting the URL address, this function becomes a never ending loop */
+/*and circulates within the loop.                                       */
+/************************************************************************/
+static _i32 establishConnectionWithAP(){
+   SlSecParams_t secParams = {0};
+   _i32 retVal = 0;
+   secParams.Key = PASSKEY;
+   secParams.KeyLen = pal_Strlen(PASSKEY);
+   secParams.Type = SEC_TYPE;
+   retVal = sl_WlanConnect(SSID_NAME, pal_Strlen(SSID_NAME), 0, &secParams, 0);
+   ASSERT_ON_ERROR(retVal);
+   while((!IS_CONNECTED(g_Status)) || (!IS_IP_ACQUIRED(g_Status))) { _SlNonOsMainLoopTask(); }
+   return SUCCESS;
+}
+
+/************************************************************************/
+/*This function is used for initialization of the application variables.*/
+/*Since,it is a static data type,it returns a value 0 implying a success*/
+/*or else a negative error-code for a value other than 0                */
+/************************************************************************/
+static _i32 initializeAppVariables(){
+   g_Status = 0;
+   g_SockID = 0;
+   g_DestinationIP = 0;
+   g_BytesReceived = 0;
+   pal_Memset(g_buff, 0, sizeof(g_buff));
+   return SUCCESS;
+}
+
+/*********************************************************************/
+/* Steps taken to make the CC3100 to pull the values from the server:
+
+ 1.http_client program from CC3100-sdk/Examples is used as a base code.
+ 2.The required header files are added in the project explorer. The
+  linker path is changed in Project properties. The required macros
+  are added in ARM Compiler/Advanced options/Predefined Symbols.
+    Headers added in main program:
+                 #include "httpcli.c"
+                 #include "httpcli.h"
+                 #include "ssock.h"
+                 #include "ssock.c"
+                 #include "jsmn.c"
+                 #include "jsmn.h"
+    Header added in simplelink/uart.h :
+                 #include "stdint.h"
+    Macros added:
+                 HTTPCli_LIBTYPE_MIN
+             __SL__
+                 _USE_CLI_
+         __CCS__
+ 3.The URI of get command is changed to 192.168.2.18. The ID is changed
+   to one of our Student ID.
+ 4.ADC value is read in Port E3. PE3 is chosen as that pin is not used
+   by CC3100 and is an analog pin.
+ 5.The output of the ADC is in the range 0 to 4095, which must be scaled
+   into 0 to 255 range as given in the requirement.
+ 6.The timer is initialized, and it is set to 5 seconds. In the interrupt
+   handler,flag is cleared.
+ 7.The 3-digit ADC value should be added to GET_URI. This is done by
+   separating the digits and then storing the values in the GET_UI array
+   by knowing its index values where it should be added.
+ 8.HTTPGetMethod() is used to post the ADC values to the server. It is
+   called every 5 seconds. This is done by using timer interrupt.
+ 9.The Server is updated every 5 seconds with the new value.
+10.To read the Response from the server, the read response function is
+   changed, the number of tokens is three, for error, semi-colon and 0 or 1.
+11.As response from the server, {Error: 0} or {Error:1} is to be printed
+   in the terminal, the data buffer which has the value is used to print. */
+/*********************************************************************/
