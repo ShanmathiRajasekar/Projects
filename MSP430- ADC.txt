@@ -1,0 +1,119 @@
+//************************************************************************/
+//The aim of the program is to perform ADC using MSP430G2553
+//Shanmathi Rajasekar and Monica Nethagani                   Pot value - 20k
+//14-September-2017
+//The analog value by a Potentiometer of resistance 20K is sensed by an analog
+//pin(P1.0) continuously. According to the input, the output LEDs are switched
+//ON or OFF.When voltage is 0, all the LEDs are turned OFF and when input is
+//maximum, all LEDs are turned ON.Similarly when voltage input is half of its
+//maximum, 5 LEDs are turned ON. The ADC registers are set accordingly.
+//************************************************************************/
+
+#include "msp430g2553.h"
+
+//************************************************************************/
+//Configuration Function
+//ADC Control Register 0 and 1 and Data Transfer Control Register are set
+//************************************************************************/
+void configuration(void){
+   ADC10CTL0 = ADC10SHT_0 + ADC10ON + ADC10IE;   //ADC control registers sets
+   //sample & hold time to 4xADC10CLKs ,10 bit ADC ON and ADC10 Interrupt enable
+   ADC10CTL1 = INCH_0;   //A0 channel selected
+   ADC10AE0 |= 0x01;   //P1.0 Analog Input Enable
+   ADC10DTC0 = 0x04;   //Data Transfer Control Register to continuous mode
+   }
+
+//************************************************************************/
+//Main Function : The ADC registers are configured and the direction registers
+//are set. In an infinite loop, ADC10MEM hex values are checked for its ranges
+//and its respective LEDs are turned ON. The analog input is given to P1.0.
+//The outputs are connected to P1.1, P1.3, P1.6, P1.7, P2.0, P2.1, P2.2, P2.3,
+//P2.4 ,P2.5.
+//************************************************************************/
+
+void main(void){
+    WDTCTL = WDTPW + WDTHOLD;   //Stop Watchdog Timer
+    P1DIR |= 0xFA;   //Direction registers are set for Port 1 and Port 2
+    P2DIR |= 0x3F;
+    P1OUT &= 0x00;
+    P2OUT &= 0x00;
+    configuration();   //To set ADC registers
+
+    while(1){
+       ADC10CTL0 |= ENC + ADC10SC;   //Enable conversion and start ADC conversion
+       __bis_SR_register(CPUOFF + GIE);   //Interrupts enabled
+
+       if (ADC10MEM <0x06){
+          P1OUT &= 0x00;
+          P2OUT &= 0x00;   //All LEDs are turned OFF
+          }
+       else if ((ADC10MEM > 0x05) && (ADC10MEM < 0x66)){
+          P1OUT &= 0x00;
+          P2OUT &= 0x00;
+          P1OUT |= BIT3;   //LED P1.3 turned ON
+          }
+       else if ((ADC10MEM >= 0x66) && (ADC10MEM < 0xCC)){
+          P1OUT &= 0x00;
+          P2OUT &= 0x00;
+          P1OUT |= BIT3 + BIT1;   //LEDS P1.3 and P1.1 are turned ON
+          }
+       else if ((ADC10MEM >= 0xCC) && (ADC10MEM < 0x132)){
+          P1OUT &= 0x00;
+          P2OUT &= 0x00;
+          P1OUT |= BIT3 + BIT1;   //LEDS P1.3 and P1.1 are turned ON
+          P2OUT |= BIT0;   //LEDS P2.0 turned ON
+          }
+       else if ((ADC10MEM >= 0x132) && (ADC10MEM < 0x198)){
+          P1OUT &= 0x00;
+          P2OUT &= 0x00;
+          P1OUT |= BIT3 + BIT1;   //LEDS P1.3 and P1.1 are turned ON
+          P2OUT |= BIT0 +BIT1;   //LEDS P2.0 and P2.1 are turned ON
+          }
+       else if ((ADC10MEM >= 0x198) && (ADC10MEM < 0x1FE)){
+          P1OUT &= 0x00;
+          P2OUT &= 0x00;
+          P1OUT |= BIT3 + BIT1;   //LEDS P1.3 and P1.1 are turned ON
+          P2OUT |= BIT0 +BIT1+BIT2;   //LEDS P2.0, P2.1 and P2.2 are turned ON
+          }
+       else if ((ADC10MEM >= 0x1FE) && (ADC10MEM < 0x264)){
+          P1OUT &= 0x00;
+          P2OUT &= 0x00;
+          P1OUT |= BIT3 + BIT1 +BIT7;   //LEDS P1.3, P1.1 and P1.7 are turned ON
+          P2OUT |= BIT0 +BIT1+BIT2;   //LEDS P2.0, P2.1 and P2.1 are turned ON
+          }
+       else if ((ADC10MEM >= 0x264) && (ADC10MEM < 0x2CA)){
+          P1OUT &= 0x00;
+          P2OUT &= 0x00;
+          P1OUT |= BIT3 + BIT1 +BIT7 +BIT6;   //LEDS P1.3, P1.1, P1.7 and P1.6 are turned ON
+          P2OUT |= BIT0 +BIT1+BIT2;   //LEDS P2.0, P2.1 and P2.1 are turned ON
+          }
+       else if ((ADC10MEM >= 0x2CA) && (ADC10MEM < 0x330)){
+          P1OUT &= 0x00;
+          P2OUT &= 0x00;
+          P1OUT |= BIT3 + BIT1 +BIT7 +BIT6;   //LEDS P1.3, P1.1, P1.7 and P1.6 are turned ON
+          P2OUT |= BIT0 +BIT1+BIT2 +BIT5;   //LEDS P2.0, P2.1, P2.2 and P2.5 are turned ON
+          }
+       else if ((ADC10MEM >= 0x330) && (ADC10MEM < 0x396)){
+          P1OUT &= 0x00;
+          P2OUT &= 0x00;
+          P1OUT |= BIT3 + BIT1 +BIT7 +BIT6;   //LEDS P1.3, P1.1, P1.7 and P1.6 are turned ON
+          P2OUT |= BIT0 +BIT1+BIT2 +BIT5 +BIT4;   //LEDS P2.0, P2.1, P2.2, P2.5 and P2.4 are turned ON
+          }
+
+       else if ((ADC10MEM >= 0x396) && (ADC10MEM < 0x400)){
+          P1OUT &= 0x00;
+          P2OUT &= 0x00;
+          P1OUT |= BIT3 + BIT1 +BIT7 +BIT6;   //LEDS P1.3, P1.1, P1.7 and P1.6 are turned ON
+          P2OUT |= BIT0 +BIT1+BIT2 +BIT5 +BIT4 +BIT3;   //LEDS P2.0, P2.1, P2.2, P2.5, P2.4 and P2.3 are turned ON
+          }
+      }
+   }
+
+//************************************************************************/
+//Interrupt Service Routine
+//Returns to active mode
+//************************************************************************/
+   #pragma vector=ADC10_VECTOR
+   __interrupt void ADC10_ISR(void){
+      __bic_SR_register_on_exit(CPUOFF);   //Returns to active mode
+      }
