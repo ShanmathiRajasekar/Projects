@@ -1,0 +1,281 @@
+/************************************************************************/
+/*The aim of the program is to read the tilt of the boosterpack MKii*/
+/*and make the ball on the LCD screen move correspondingly*/
+/*Shanmathi Rajasekar and Monica Nethagani*/
+/*23-October-2017*/
+/* Reference from Dr.Volvano example */
+/*The accelerometer reads the value continuously when there is a movement*/
+/*of the Boosterpack MKII board. The value of accelerometer is stored in */
+/*the ADC. The board can be oriented in both x-axis and y-axis.When the board*/
+/*is rotated in x-axis, one channel of ADC is enabled to read the corresponding*/
+/*value and another channel is enabled to read the y-axis corresponding value.*/
+/*According to the accelerometer value, the ball on the LCD screen should */
+/*satisfy the following conditions accordingly:The ball moves around the LCD*/
+/*screen depending on the tilt of the board. The movement of the ball is smooth*/
+/*and does not change more than one pixel every 50 milliseconds.*/
+/*When the system is sitting flat on the table, the ball is in the center of*/
+/*the screen. When the system is oriented such that the board surface is at a*/
+/*5-degree angle while one edge is horizontal, the ball is half way between the*/
+/*edge and the center of the screen (test X and Y). When the system is oriented*/
+/*such that the board surface is at a 10-degree angle while one edge is horizontal*/
+/*for an extended amount of time, the ball is at the edge of the screen.*/
+/*The ball should change its size according to the position on the LCD board. When*/
+/*the ball is at the center, the ball size should be 8 pixels; when at 1/3 rd*/
+/*distance from the center, the ball size should be 4 pixels and when at 2/3 rd*/
+/*distance from the center, the ball size should be 2 pixels.*/
+/************************************************************************/
+#include <stdio.h>
+#include <stdint.h>
+#include "ST7735.h"
+#include "PLL.h"
+#include "tm4c123gh6pm.h"
+#include<stdbool.h>
+#include"driverlib/gpio.h"
+#include"hw_memmap.h"
+#include"hw_types.h"
+#include"driverlib/debug.h"
+#include"adc.h"
+#include"sysctl.h"
+
+/************************************************************************/
+/*Initialization of global variables and functions*/
+/************************************************************************/
+
+void DelayWait10ms(uint32_t n){
+   uint32_t volatile time;
+   while(n){
+      time = 727240*2/91;
+      while(time){
+         time--;
+      }
+      n--;
+   }
+}
+
+uint32_t ADC_tilt[2];
+const int x_or_y=1;
+int  x,y;
+int  step_x=dx=1,step_y=dy=1;
+int value_x,value_y;
+
+const uint16_t ball_8[] ={
+                          0xAAAA,   0xAAAA,   0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,
+                          0xAAAA,   0xAAAA,   0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,
+                          0xAAAA,   0xAAAA,   0xAAAA,  0xAAAA,  0xAAAA,  0X0000,  0X0000,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,
+                          0xAAAA,   0xAAAA,   0xAAAA,  0xAAAA,  0X0000,  0X0000,  0X0000,  0X0000,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,
+                          0xAAAA,   0xAAAA,   0xAAAA,  0X0000,  0X0000,  0X0000,  0X0000,  0X0000,  0X0000,  0xAAAA,  0xAAAA,  0xAAAA,
+                          0xAAAA,   0xAAAA,   0X0000,  0X0000,  0X0000,  0X0000,  0X0000,  0X0000,  0X0000,  0X0000,  0xAAAA,  0xAAAA,
+                          0xAAAA,   0xAAAA,   0X0000,  0X0000,  0X0000,  0X0000,  0X0000,  0X0000,  0X0000,  0X0000,  0xAAAA,  0xAAAA,
+                          0xAAAA,   0xAAAA,   0xAAAA,  0X0000,  0X0000,  0X0000,  0X0000,  0X0000,  0X0000,  0xAAAA,  0xAAAA,  0xAAAA,
+                          0xAAAA,   0xAAAA,   0xAAAA,  0xAAAA,  0X0000,  0X0000,  0X0000,  0X0000,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,
+                          0xAAAA,   0xAAAA,   0xAAAA,  0xAAAA,  0xAAAA,  0X0000,  0X0000,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,
+                          0xAAAA,   0xAAAA,   0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,
+                          0xAAAA,   0xAAAA,   0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,
+                         };
+
+
+const uint16_t ball_4[]={
+                         0xAAAA,   0xAAAA,   0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA, 0xAAAA,
+                         0xAAAA,   0xAAAA,   0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA, 0xAAAA,
+                         0xAAAA,   0xAAAA,   0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA, 0xAAAA,
+                         0xAAAA,   0xAAAA,   0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA, 0xAAAA,
+                         0xAAAA,   0xAAAA,   0xAAAA,  0xAAAA,  0xAAAA,  0X0000,  0X0000,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA, 0xAAAA,
+                         0xAAAA,   0xAAAA,   0xAAAA,  0xAAAA,  0X0000,  0X0000,  0X0000,  0X0000,  0xAAAA,  0xAAAA,  0xAAAA, 0xAAAA,
+                         0xAAAA,   0xAAAA,   0xAAAA,  0xAAAA,  0X0000,  0X0000,  0X0000,  0X0000,  0xAAAA,  0xAAAA,  0xAAAA, 0xAAAA,
+                         0xAAAA,   0xAAAA,   0xAAAA,  0xAAAA,  0xAAAA,  0X0000,  0X0000,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA, 0xAAAA,
+                         0xAAAA,   0xAAAA,   0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA, 0xAAAA,
+                         0xAAAA,   0xAAAA,   0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA, 0xAAAA,
+                         0xAAAA,   0xAAAA,   0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA, 0xAAAA,
+                         0xAAAA,   0xAAAA,   0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA, 0xAAAA,
+                        };
+
+const uint16_t ball_2[]={
+
+                         0xAAAA,   0xAAAA,   0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA, 0xAAAA,  0xAAAA,
+                         0xAAAA,   0xAAAA,   0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA, 0xAAAA,
+                         0xAAAA,   0xAAAA,   0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA, 0xAAAA,
+                         0xAAAA,   0xAAAA,   0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA, 0xAAAA,
+                         0xAAAA,   0xAAAA,   0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA, 0xAAAA,
+                         0xAAAA,   0xAAAA,   0xAAAA,  0xAAAA,  0xAAAA,  0X0000,  0X0000,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA, 0xAAAA,
+                         0xAAAA,   0xAAAA,   0xAAAA,  0xAAAA,  0xAAAA,  0X0000,  0X0000,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA, 0xAAAA,
+                         0xAAAA,   0xAAAA,   0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA, 0xAAAA,
+                         0xAAAA,   0xAAAA,   0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA, 0xAAAA,
+                         0xAAAA,   0xAAAA,   0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA, 0xAAAA,
+                         0xAAAA,   0xAAAA,   0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA, 0xAAAA,
+                         0xAAAA,   0xAAAA,   0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA,  0xAAAA, 0xAAAA,
+                        };
+
+
+/************************************************************************/
+/*Main function: The peripherals are enabled and initialization of ADC
+/* The codes for X axis accelerometer and Y axis accelerometer are both
+/* in the same code. When the ADC value of channel 0 is read, the ball
+/* moves along the X axis on the screen. While the ADC value of channel 1
+/* makes the ball move along the Y axis on the screen.
+/* Pins on the Boosterpack MKII: Supply               - J 1.1
+/*                               Ground               - J2.20
+/*                               X axis accelerometer - J 3.23
+/*                               Y axis accelerometer - J 3.24
+/* Pins on TM4C123GH 6pm          : ADC0 channel[0]      - PE3
+/*                               ADC0 channel[1]      - PE2*/
+/************************************************************************/
+int main(){
+   PLL_Init(Bus80MHz);
+   ST7735_InitR(INITR_REDTAB);
+   SysCtlClockSet(SySCTL_SySDIV_5|SySCTL_USE_PLL|SySCTL_OSC_MAIN|SySCTL_XTAL_16MHZ);
+   SysCtlPeripheralEnable(SySCTL_PERIPH_ADC0);// Enabling ADC0
+   SysCtlPeripheralEnable(SySCTL_PERIPH_GPIOE);//Enabling PortE
+   GPIOPinTypeADC(GPIO_PORTE_BASE,GPIO_PIN_3|GPIO_PIN_2);
+   ADCSequenceConfigure(ADC0_BASE, 1, ADC_TRIGGER_PROCESSOR, 0);
+   ADCSequenceStepConfigure(ADC0_BASE, 1, 0, ADC_CTL_CH0|ADC_CTL_IE);
+   ADCSequenceStepConfigure(ADC0_BASE, 1, 1, ADC_CTL_CH1|ADC_CTL_IE);
+   ADCSequenceEnable(ADC0_BASE, 1);
+
+   ST7735_FillScreen(0xAAAA); // setting the screen to 0xAAAA
+
+   while(1)
+      {
+       ADCIntClear(ADC0_BASE, 1);
+       ADCProcessorTrigger(ADC0_BASE, 1);
+       ADCSequenceDataGet(ADC0_BASE, 1, ADC_tilt); //ADC values stored in ADC_tilt
+       value_x=ADC_tilt[0];
+       value_y=ADC_tilt[1];
+       //X axis accelerometer
+       if(value_x>2000)
+          {
+           if(x<=20){
+              ST7735_FillScreen(0xAAAA);
+              ST7735_DrawBitmap(x, y, ball_2, 12, 12); //ball of 2 pixel at left edge of center
+              x=x+1;
+              DelayWait10ms(7);
+           }
+             if((40>x)&&(x>20)){
+              if((1250<value_x)&&(value_x<1300)){
+              ST7735_FillScreen(0xAAAA);
+              ST7735_DrawBitmap(x, y, ball_4, 12, 12); //ball of 4 pixel at left side of center
+              x=x+1;
+              DelayWait10ms(7);
+              }
+              if((60>=x)&&(x>=40)){
+              ST7735_FillScreen(0xAAAA);
+              ST7735_DrawBitmap(x, y, ball_8, 12, 12); //ball of 8 pixel at the center
+              x=x+1;
+              DelayWait10ms(7);
+              if((1150<=value_x)&&(value_x<=1200)){
+              ST7735_DrawBitmap(x, y, ball_8, 12, 12);
+              }
+              if((80<x)&&(x<100))
+                 {
+                 if((1250<value_x)&&(value_x<1300)){
+                 ST7735_FillScreen(0xAAAA);
+                 x=x+dx;
+                 ST7735_DrawBitmap(x, y, ball_4, 12, 12); //ball at right side of center
+                 }}
+           else if(x>=100){
+               ST7735_FillScreen(0xAAAA);
+               ST7735_DrawBitmap(x, y, ball_2, 12, 12);} //ball at right edge of center
+               x=x+1;
+               DelayWait10ms(7);
+               }
+           }
+        }
+
+      else if(value_x<=2200){
+          if((41>x)&&(x>21))
+             if((2000<value_x)&&(value_x<2200)){
+                ST7735_DrawBitmap(x, y, ball_4, 12, 12); //ball moves from center to left side
+                x=x-1;
+                DelayWait10ms(7);}
+          else if ((60>=x)&&(x>=40)){
+             ST7735_DrawBitmap(x, y, ball_8, 12, 12);
+             }
+          else if(x<=20)
+          {ST7735_DrawBitmap(x, y, ball_2, 12, 12);}
+          if((80<x)&&(x<100))
+          {    if((1050<value_x)&&(value_x<1100))
+              ST7735_DrawBitmap(x, y, ball_4, 12, 12);}
+
+          else if(x>=100)
+          {   ST7735_DrawBitmap(x, y, ball_2, 12, 12);  //ball moves from left side to left edge
+              x=x-1;
+              DelayWait10ms(7);}
+
+          else if ((60<=x)&&(x<=80)){
+              ST7735_DrawBitmap(x, y, ball_8, 12, 12);  //ball moves from right side to center
+              x=x-1;
+              DelayWait10ms(7);
+     }
+ }
+
+    else{
+{
+    //Y axis accelerometer
+if((80<y)&&(y<100))
+{   if((1850<value_y)&&(value_y<2000))
+      ST7735_DrawBitmap(x, y, ball_4, 12, 12);}               //ball at top side of center
+    else  if(y>=100)
+        { ST7735_DrawBitmap(x, y, ball_2, 12, 12);               //ball at top edge of center
+         y=y+1;
+         DelayWait10ms(7);}
+
+else if ((60<=y)&&(y<=80)){
+    ST7735_DrawBitmap(x, y, ball_8, 12, 12);
+    if((1200<=value_y)&&(value_y<=1300))
+      {
+      ST7735_DrawBitmap(x, y, ball_8, 12, 12);            //ball at center
+      y=y+1;
+      DelayWait10ms(7);
+      }
+  }
+if((40>y)&&(y>20))
+    {
+    if((1250<value_y)&&(value_y<1300)){
+    ST7735_DrawBitmap(x, y, ball_4, 12, 12);            //ball at bottom side of center
+    DelayWait10ms(7);}
+    else if(y<=21)
+    ST7735_DrawBitmap(x, y, ball_2, 12, 12);            //ball at bottom edge of center
+DelayWait10ms(7);}
+    else if ((64>=y)&&(y>=42)){
+    ST7735_DrawBitmap(x, y, ball_8, 12, 12);
+    if((1250<=value_y)&&(value_y<=1300)){
+        ST7735_DrawBitmap(x, y, ball_8, 12, 12);
+        DelayWait10ms(7);
+    }
+}else if(value_y<=1500){
+if(y<=20)
+    {ST7735_DrawBitmap(x, y, ball_2, 12, 12);            //ball moves to bottom edge
+    y=y-1;
+    DelayWait10ms(7);}
+    else if ((60>=y)&&(y>=40)){
+    ST7735_DrawBitmap(x, y, ball_8, 12, 12);
+    }
+      else   if((41>y)&&(y>21))
+           if((1250<value_y)&&(value_y<1300))
+              ST7735_DrawBitmap(x, y, ball_4, 12, 12);}  //ball moves from center to bottom side
+    if((80<y)&&(y<100))
+    {    if((1060<value_y)&&(value_y<1160))
+        ST7735_DrawBitmap(x, y, ball_4, 12, 12);}       //ball moves from center to top side
+
+    else if(y>=100)
+       {ST7735_DrawBitmap(x, y, ball_2, 12, 12);           //ball moves to top edge
+       y=y-1;
+       DelayWait10ms(7);}
+       else if ((60<=y)&&(y<=80)){
+       ST7735_DrawBitmap(x, y, ball_8, 12, 12);
+    }
+}
+else
+   ST7735_DrawBitmap(x, y, ball_8, 12, 12);
+DelayWait10ms(7);
+      }
+   }
+return 0;
+}
+/************************************************************************/
+//Issues Faced:
+//Had to desolder the resistors-R9 and R10 to make the LCD screen work.
+//The mounting of Boosterpack on the tiva board was disabling the LCD screen.
+//There was no linear value for y-axis in the ADC.
+//Difficulty in calibrating the ADC
+/************************************************************************/
+
